@@ -31,6 +31,7 @@ function replaceSelection(selection: vscode.Selection, text: string) {
 	);
 	vscode.window.activeTextEditor?.edit(textEditorEdit => {
 		textEditorEdit.replace(lines, text);
+		vscode.commands.executeCommand('editor.fold');
 	});
 }
 
@@ -130,6 +131,9 @@ export function isBlockEnd(line = '') {
 	return BLOCK_END_RE.test(line);
 }
 
+// FIXME: Right now this only checks if the cursor is on the start of a region.
+// It should check if the cursor is contained with in the parallel blocks.
+// Can iterate though lines above or below to see where/if it runs into a #region or #endblock
 export function isParallelRegion(selection: vscode.Selection) {
 	if (selection.start.line === selection.end.line) {
 		const line = vscode.window.activeTextEditor?.document.lineAt(selection.start.line).text;
@@ -174,7 +178,7 @@ function deactivateBlockString(str: string) {
 	return str.replace('active', '');
 }
 
-function arrayInsert(arr, index, ...items) {
+function arrayInsert(arr: any[], index: number, ...items: any[]) {
 	return [
 		...arr.slice(0, index),
 		...items,
@@ -194,12 +198,12 @@ function parseBlocks(lines: string[]) {
 		const line = lines[i];
 
 		if (line && isBlockStart(line)) {
-			if (isActiveBlock(line)) {
-				activeLineBlock = blocks.length;
-			}
-
 			if (currentBlock) {
 				blocks.push(currentBlock);
+			}
+
+			if (isActiveBlock(line)) {
+				activeLineBlock = blocks.length;
 			}
 
 			currentBlock = [];			
@@ -208,7 +212,6 @@ function parseBlocks(lines: string[]) {
 		if (line && isRegionEnd(line)) {
 			blocks.push(currentBlock);
 			currentBlock = [];
-			// endRegion = i - startLine;
 		}
 
 		if (currentBlock) {
@@ -228,9 +231,69 @@ function parseBlocks(lines: string[]) {
  * @param blocks string[][]
  */
 function joinBlocks(blocks: any) {
-	return blocks.reduce((acc: string, block: string[]) => {
-		return acc + block.join('\n');
+	return blocks.reduce((acc: string, block: string[], i: number) => {
+		if (i > 0) {
+			return acc + '\n' + block.join('\n');
+		} else {
+			return acc + block.join('\n');
+		}
 	}, '');
+}
+
+function getText(lineNumber: number) {
+	return vscode.window.activeTextEditor?.document.lineAt(lineNumber).text || '';
+}
+
+/**
+ * Returns the information about the parallel region if it exists, null otherwise.
+ * @param selection 
+ */
+function getRegion(selection: vscode.Selection) {
+	const lineCount = vscode.window.activeTextEditor?.document.lineCount || 0;
+	let regionStart: number | undefined;
+	let blockEnd: number | undefined;
+	// Get region start
+	for (let i = selection.start.line; i >= 0; i--) {
+		const text = getText(i);
+		if (isRegionStart(text)) {
+			regionStart = i;
+			break;
+		} else if (i !== selection.start.line && isBlockEnd(text)) {
+			return null;
+		}
+	}
+
+	for (let i = selection.end.line; i < lineCount; i++) {
+		const text = getText(i);
+		if (isBlockEnd(text)) {
+			blockEnd = i;
+			break;
+		} else if (i !== regionStart && isRegionStart(text)) {
+			return null;
+		}
+	}
+
+	if (!isDefined(regionStart) || !isDefined(blockEnd)) {
+		return null;
+	}
+
+	if (typeof regionStart === 'number' && typeof blockEnd === 'number') {
+		const lines = [];
+		for (let i = regionStart; i <= blockEnd; i++) {
+			const text = getText(i);
+			lines.push(text);
+		}
+
+		const { activeLineBlock, blocks } = parseBlocks(lines);
+
+		return {
+			regionStart,
+			blockEnd,
+			lines,
+			activeLineBlock,
+			blocks
+		};
+	}
 }
 
 // this method is called when your extension is activated
@@ -241,10 +304,6 @@ export function activate(context: vscode.ExtensionContext) {
 	// This line of code will only be executed once when your extension is activated
 	console.log('Congratulations, your extension "parallel-blocks" is now active!');
 
-	// The command has been defined in the package.json file
-	// Now provide the implementation of the command with registerCommand
-	// The commandId parameter must match the command field in package.json
-
 	let newBlock = vscode.commands.registerCommand(
 		'parallel-blocks.newBlock',  
 		() => {
@@ -252,61 +311,50 @@ export function activate(context: vscode.ExtensionContext) {
 			if (vscode.window.activeTextEditor) {
 				const selection = vscode.window.activeTextEditor.selection;
 
+				const region = getRegion(selection);
+				console.log(region);
+
 				// Add a block to an existing region.
-				if (isParallelRegion(selection)) {
+				// if (isParallelRegion(selection)) {
+				if (region) {
 					console.log('Adding new block');
 					// Adding a new block here.
 					// Need to get the region after the last block.
 					const indentation = generateIndentation(vscode.window.activeTextEditor?.document.lineAt(selection.start.line).text);
-
-					// pull out the lines
-					const lineCount = vscode.window.activeTextEditor?.document.lineCount || 0;
-					const startLine = selection.start.line;
-					const lines = [];
-					for (let i = startLine; i < lineCount; i++) {
-						const line = vscode.window.activeTextEditor?.document.lineAt(i).text;
-						lines.push(line);
-						if (line && isBlockEnd(line)) {
-							break;
-						}
-					}
 					
-					const { activeLineBlock, blocks} = parseBlocks(lines);
-
-					console.log(blocks);
+					const { blocks, activeLineBlock } = region;
 
 					// Deactive the currently active section.
 					if (activeLineBlock > -1) {
 						// Remove active from the block declaration line
 						const blockToDeactivate = blocks[activeLineBlock] || [];
-						// lines[activeLineBlock] = deactivateBlockString(lines[activeLineBlock]);
 						blockToDeactivate[0] = deactivateBlockString(blockToDeactivate[0]);
 						// add the previously active text below the now deactivated line.
-						// const block = lines.slice(endRegion+1, endBlock);
-						// arrayInsert(lines, activeLineBlock + 1, block);
 
 						if (blocks[blocks.length-1]?.length) {
 							const activeLines = blocks[blocks.length - 1] || [];
 							for (let i = 1; i < activeLines.length - 1; i++) {
-								blockToDeactivate?.push(activeLines[i]);
+								const line = `${COMMENT} ${activeLines[i]}`;
+								blockToDeactivate?.push(line);
 							}
 						}
+
+						const block = [];
+						block.push(`${indentation}${COMMENT} __${blocks.length}__active`);
+
+						const newBlocks = arrayInsert(blocks, blocks.length - 1, block);
+
+						const snippet = joinBlocks(newBlocks) + '\n';
+						replaceSelection(new vscode.Selection(
+							new vscode.Position(region.regionStart + 1, 0),
+							new vscode.Position(region.blockEnd, 0)
+						), snippet);
 					}
-
-					// TODO: write the blocks and debug
-					console.log(joinBlocks(blocks));
-
-					// Add a new active block above the end region.
-					// if (endRegion) {
-					// 	const block = `${indentation}${COMMENT} __${10}__active\n`;
-					// 	insert(new vscode.Position(endRegion, 0), block);
-					// }
 				} else {
 					// Create a new region.
 					const region = generateRegion(selection);
 					if (region) {
 						replaceSelection(vscode.window.activeTextEditor?.selection, region);
-						vscode.commands.executeCommand('editor.fold');
 					}
 				}
 			}
