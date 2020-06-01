@@ -1,5 +1,7 @@
 TODO
 ----
 
-- Identify commands.
-- Keybindings in package.json
+- next block
+- previous block
+- proper comment style for language
+- tests
