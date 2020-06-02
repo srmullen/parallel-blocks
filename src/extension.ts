@@ -16,6 +16,13 @@ function isDefined(el: any) {
 	return el !== undefined && el !== null;
 }
 
+function modulo(n: number, m: number) {
+	while (n < m) {
+		n += m;
+	}
+	return n % m;
+}
+
 function getCurrentEnvironment() {
 	const currentLine = Number(vscode.window.activeTextEditor?.selection.active.line);
 	const currentLineString = isDefined(currentLine) ? vscode.window.activeTextEditor?.document.lineAt(currentLine).text : null;
@@ -423,7 +430,6 @@ export function activate(context: vscode.ExtensionContext) {
 				return;
 			}
 
-			console.log('Going to the next block.');
 			const newActiveBlockIdx = (region.activeLineBlock + 1) % (region.blocks.length - 1);
 			deactivateBlock(region);
 			activateBlock(region, newActiveBlockIdx);
@@ -449,10 +455,14 @@ export function activate(context: vscode.ExtensionContext) {
 				return;
 			}
 
-			console.log('Going to the previous block.');
-			const activeBlock = region.blocks[region.activeLineBlock];
-			const blockToActivate = (region.activeLineBlock -1) % (region.blocks.length - 1);
-			console.log(blockToActivate);
+			const newActiveBlockIdx = modulo(region.activeLineBlock -1, region.blocks.length - 1);			
+			deactivateBlock(region);
+			activateBlock(region, newActiveBlockIdx);
+			const snippet = joinBlocks(region.blocks) + '\n';
+			replaceSelection(new vscode.Selection(
+				new vscode.Position(region.regionStart + 1, 0),
+				new vscode.Position(region.blockEnd, 0)
+			), snippet);
 		}
 	);
 
