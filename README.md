@@ -50,3 +50,25 @@ Added features X, Y, and Z.
 -----------------------------------------------------------------------------------------------------------
 
 Inspiration from the great http://codes.kary.us/comment/vscode/tree/master
+
+FIXME
+-----
+
+- When region is right below colapsable block and the the addBlock command is triggered on the region start, it colapses the above block
+```javascript
+
+// addBlock on //#region colapses the for loop.
+ for (let i = 0; i < arr.length; i++) {
+    //#region
+    // __1__
+//     sum += arr[i];
+    // __2__
+//     sum += arr[i];
+    // __3__
+//     sum += arr[i];
+    // __4__active
+    //#endregion
+    sum += arr[i];
+    //#endblock
+  }
+```

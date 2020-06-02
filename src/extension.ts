@@ -4,6 +4,14 @@ import * as vscode from 'vscode';
 
 const COMMENT = '//';
 
+interface Region {
+	regionStart: number;
+	blockEnd: number;
+	lines: string[];
+	activeLineBlock: number;
+	blocks: (string[] | undefined)[];
+}
+
 function isDefined(el: any) {
 	return el !== undefined && el !== null;
 }
@@ -87,6 +95,7 @@ function generateIndentation(line: string) {
 	return repeat(' ', linesFirstSpacing.spaces) + computeTabs(linesFirstSpacing.tabs);
 }
 
+// FIXME: This should probably generateBlock and return a string[] rather than just a concated string, so it can be reused when managing blocks.
 function generateBlockString(lines: string[], n: number, active = false) {
 	const indentation = generateIndentation(lines[0]);
 	let block = '';
@@ -97,8 +106,9 @@ function generateBlockString(lines: string[], n: number, active = false) {
 
 		for (let i = 0; i < lines.length; i++) {
 			const line = lines[i];
-			const indent = generateIndentation(line);
-			block += `${indent}${COMMENT} ${line.trim()}\n`;
+			// const indent = generateIndentation(line);
+			// block += `${indent}${COMMENT} ${line.trim()}\n`;
+			block += `${COMMENT} ${line}\n`;
 		}
 	}
 
@@ -109,6 +119,7 @@ const REGION_START_RE = /\/\/#region/;
 const REGION_END_RE = /\/\/#endregion/;
 const REGION_ACTIVE_RE = /\/\/\s*__\d+__active/;
 const BLOCK_START_RE = /\/\/\s*__\d+__/;
+const BLOCK_NUMBER_RE = /__\d+__/;
 const BLOCK_END_RE = /\/\/#endblock/;
 
 export function isRegionStart(line = '') {
@@ -176,6 +187,12 @@ function generateRegion(selection: vscode.Selection) {
 
 function deactivateBlockString(str: string) {
 	return str.replace('active', '');
+}
+
+function activateBlockString(str: string) {
+	const match = str.match(BLOCK_NUMBER_RE) || [];
+	const identifier = match[0];
+	return str.replace(identifier, `${identifier}active`);
 }
 
 function arrayInsert(arr: any[], index: number, ...items: any[]) {
@@ -296,6 +313,47 @@ function getRegion(selection: vscode.Selection) {
 	}
 }
 
+// Mutating
+function deactivateBlock(region: Region) {
+	const { blocks, activeLineBlock } = region;
+	// Remove active from the block declaration line
+	const blockToDeactivate = blocks[activeLineBlock] || [];
+	blockToDeactivate[0] = deactivateBlockString(blockToDeactivate[0]);
+	// add the previously active text below the now deactivated line.
+
+	if (blocks[blocks.length - 1]?.length) {
+		const activeLines = blocks[blocks.length - 1] || [];
+		for (let i = 1; i < activeLines.length - 1; i++) {
+			const line = `${COMMENT} ${activeLines[i]}`;
+			blockToDeactivate?.push(line);
+		}
+	}
+}
+
+// Mutating
+function activateBlock(region: Region, idx: number) {
+	const [blockHeader, ...code] = region.blocks[idx] || [];
+	const editable = region.blocks[region.blocks.length-1] || [];
+	const block = [];
+	if (!blockHeader) {
+		return;
+	}
+
+	block.push(activateBlockString(blockHeader));
+	region.blocks[idx] = block;
+	const uncommented = code.map(line => {
+		const [,,, ...str] = line;
+		return str.join('');
+	});
+	// const newEditable = arrayInsert(editable, 0, ...uncommented);
+	const newEditable = [
+		editable[0],
+		...uncommented,
+		editable[editable.length-1]
+	];
+	region.blocks[region.blocks.length - 1] = newEditable;
+}
+
 // this method is called when your extension is activated
 // your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
@@ -308,54 +366,42 @@ export function activate(context: vscode.ExtensionContext) {
 		'parallel-blocks.newBlock',  
 		() => {
 			const environment = getCurrentEnvironment();
-			if (vscode.window.activeTextEditor) {
-				const selection = vscode.window.activeTextEditor.selection;
+			if (!vscode.window.activeTextEditor) {
+				return;
+			}
 
-				const region = getRegion(selection);
-				console.log(region);
+			const selection = vscode.window.activeTextEditor.selection;
 
-				// Add a block to an existing region.
-				// if (isParallelRegion(selection)) {
+			const region = getRegion(selection);
+
+			// Add a block to an existing region.
+			if (region) {
+				// Adding a new block here.
+				// Need to get the region after the last block.
+				const indentation = generateIndentation(vscode.window.activeTextEditor?.document.lineAt(selection.start.line).text);
+
+				const { blocks, activeLineBlock } = region;
+
+				// Deactive the currently active section.
+				if (activeLineBlock > -1) {
+					deactivateBlock(region);
+
+					const block = [];
+					block.push(`${indentation}${COMMENT} __${blocks.length}__active`);
+
+					const newBlocks = arrayInsert(blocks, blocks.length - 1, block);
+
+					const snippet = joinBlocks(newBlocks) + '\n';
+					replaceSelection(new vscode.Selection(
+						new vscode.Position(region.regionStart + 1, 0),
+						new vscode.Position(region.blockEnd, 0)
+					), snippet);
+				}
+			} else {
+				// Create a new region.
+				const region = generateRegion(selection);
 				if (region) {
-					console.log('Adding new block');
-					// Adding a new block here.
-					// Need to get the region after the last block.
-					const indentation = generateIndentation(vscode.window.activeTextEditor?.document.lineAt(selection.start.line).text);
-					
-					const { blocks, activeLineBlock } = region;
-
-					// Deactive the currently active section.
-					if (activeLineBlock > -1) {
-						// Remove active from the block declaration line
-						const blockToDeactivate = blocks[activeLineBlock] || [];
-						blockToDeactivate[0] = deactivateBlockString(blockToDeactivate[0]);
-						// add the previously active text below the now deactivated line.
-
-						if (blocks[blocks.length-1]?.length) {
-							const activeLines = blocks[blocks.length - 1] || [];
-							for (let i = 1; i < activeLines.length - 1; i++) {
-								const line = `${COMMENT} ${activeLines[i]}`;
-								blockToDeactivate?.push(line);
-							}
-						}
-
-						const block = [];
-						block.push(`${indentation}${COMMENT} __${blocks.length}__active`);
-
-						const newBlocks = arrayInsert(blocks, blocks.length - 1, block);
-
-						const snippet = joinBlocks(newBlocks) + '\n';
-						replaceSelection(new vscode.Selection(
-							new vscode.Position(region.regionStart + 1, 0),
-							new vscode.Position(region.blockEnd, 0)
-						), snippet);
-					}
-				} else {
-					// Create a new region.
-					const region = generateRegion(selection);
-					if (region) {
-						replaceSelection(vscode.window.activeTextEditor?.selection, region);
-					}
+					replaceSelection(vscode.window.activeTextEditor?.selection, region);
 				}
 			}
 		}
@@ -363,12 +409,51 @@ export function activate(context: vscode.ExtensionContext) {
 
 	let nextBlock = vscode.commands.registerCommand(
 		'parallel-blocks.nextBlock',
-		() => {}
+		() => {
+			if (!vscode.window.activeTextEditor) {
+				return;
+			}
+
+			const selection = vscode.window.activeTextEditor.selection;
+			const region = getRegion(selection);
+
+			if (!region) {
+				return;
+			}
+
+			console.log('Going to the next block.');
+			const newActiveBlockIdx = (region.activeLineBlock + 1) % (region.blocks.length - 1);
+			console.log(region);
+			deactivateBlock(region);
+
+			activateBlock(region, newActiveBlockIdx);
+			const snippet = joinBlocks(region.blocks) + '\n';
+			replaceSelection(new vscode.Selection(
+				new vscode.Position(region.regionStart + 1, 0),
+				new vscode.Position(region.blockEnd, 0)
+			), snippet);
+		}
 	);
 
 	let prevBlock = vscode.commands.registerCommand(
 		'parallel-blocks.prevBlock',
-		() => {}
+		() => {
+			if (!vscode.window.activeTextEditor) {
+				return;
+			}
+
+			const selection = vscode.window.activeTextEditor.selection;
+			const region = getRegion(selection);
+
+			if (!region) {
+				return;
+			}
+
+			console.log('Going to the previous block.');
+			const activeBlock = region.blocks[region.activeLineBlock];
+			const blockToActivate = (region.activeLineBlock -1) % (region.blocks.length - 1);
+			console.log(blockToActivate);
+		}
 	);
 
 	context.subscriptions.push(newBlock);
