@@ -32,14 +32,17 @@ function getCurrentEnvironment() {
 	};
 }
 
-function replaceSelection(selection: vscode.Selection, text: string) {
+function replaceSelection(selection: vscode.Selection, text: string, fold = false) {
 	const lines = new vscode.Selection(
 		new vscode.Position(selection.start.line, 0),
 		new vscode.Position(selection.end.line + 1, 0)
 	);
 	vscode.window.activeTextEditor?.edit(textEditorEdit => {
 		textEditorEdit.replace(lines, text);
-		vscode.commands.executeCommand('editor.fold');
+	}).then(() => {
+		if (fold) {
+			vscode.commands.executeCommand('editor.fold');
+		}
 	});
 }
 
@@ -345,7 +348,6 @@ function activateBlock(region: Region, idx: number) {
 		const [,,, ...str] = line;
 		return str.join('');
 	});
-	// const newEditable = arrayInsert(editable, 0, ...uncommented);
 	const newEditable = [
 		editable[0],
 		...uncommented,
@@ -395,13 +397,13 @@ export function activate(context: vscode.ExtensionContext) {
 					replaceSelection(new vscode.Selection(
 						new vscode.Position(region.regionStart + 1, 0),
 						new vscode.Position(region.blockEnd, 0)
-					), snippet);
+					), snippet, true);
 				}
 			} else {
 				// Create a new region.
 				const region = generateRegion(selection);
 				if (region) {
-					replaceSelection(vscode.window.activeTextEditor?.selection, region);
+					replaceSelection(vscode.window.activeTextEditor?.selection, region, true);
 				}
 			}
 		}
@@ -423,9 +425,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 			console.log('Going to the next block.');
 			const newActiveBlockIdx = (region.activeLineBlock + 1) % (region.blocks.length - 1);
-			console.log(region);
 			deactivateBlock(region);
-
 			activateBlock(region, newActiveBlockIdx);
 			const snippet = joinBlocks(region.blocks) + '\n';
 			replaceSelection(new vscode.Selection(
